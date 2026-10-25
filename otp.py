@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 import os
 import random
@@ -10,28 +10,23 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
-
 DATABASE_URL = "sqlite:///./auth_background.db"
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
 )
 
-
 class OTPToken(SQLModel, table=True):
-  id: int | None = Field(default=None, primary_key=True)
-  email: str = Field(index=True, unique=True)
-  otp: str
-  expires_at: datetime
-
+    id: int | None = Field(default=None, primary_key=True)
+    email: str = Field(index=True, unique=True)
+    otp: str
+    expires_at: datetime
 
 SQLModel.metadata.create_all(engine)
-
 
 app = FastAPI()
 app.add_middleware(
     SessionMiddleware, secret_key="096798037080875"
 )
-
 
 templates_dict = {
     "layout.html": """
@@ -80,116 +75,98 @@ templates_dict = {
         </div>
         <button type="submit" class="w-full bg-green-600 text-white py-2 rounded-lg font-medium hover:bg-green-700 transition">Verify & Sign In</button>
     </form>
-    {% endblock %}:
-    """,
+    {% endblock %}
+    """
 }
 
 templates = Jinja2Templates(env=None)
 templates.env.loader = DictLoader(templates_dict)
 
-
 def send_email_smtp(email: str, otp_code: str):
-  """Sends an email via SMTP.
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    sender_email = os.getenv("SMTP_SENDER", "jamlickmarsh400@gmail.com")
+    sender_password = os.getenv("SMTP_PASSWORD", "678499")
 
-  FastAPI automatically runs this function in a separate thread pool so it
-  doesn't block the event loop.
-  """
+    msg = EmailMessage()
+    msg.set_content(f"Your login verification code is: {otp_code}\nThis code expires in 5 minutes.")
+    msg["Subject"] = "Your One-Time Verification Code"
+    msg["From"] = sender_email
+    msg["To"] = email
 
-  smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-  smtp_port = int(os.getenv("SMTP_PORT", 587))
-  sender_email = os.getenv("SMTP_SENDER", "jamlickmarsh400@gmail.com")
-  sender_password = os.getenv("SMTP_PASSWORD", "678499")
-
-  msg = EmailMessage()
-  msg.set_content(
-      f"Your login verification code is: {otp_code}\nThis code expires in 1"
-      " minute."
-  )
-  msg["Subject"] = "Your One-Time Verification Code"
-  msg["From"] = sender_email
-  msg["To"] = email
-
-  try:
-    with smtplib.SMTP(smtp_server, smtp_port) as server:
-      server.starttls()
-      server.login(sender_email, sender_password)
-      server.send_message(msg)
-    print(f"[BACKGROUND TASK] Email successfully sent to {email}")
-  except Exception as e:
-    
-    print(f"[BACKGROUND TASK ERROR] Failed to send email to {email}: {e}")
-
-
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        print(f"[BACKGROUND TASK] Email successfully sent to {email}")
+    except Exception as e:
+        print(f"[BACKGROUND TASK ERROR] Failed to send email to {email}: {e}")
 
 @app.get("/")
 def index(request: Request):
-  user_email = request.session.get("user_email")
-  return templates.TemplateResponse(
-      "index.html", {"request": request, "user_email": user_email}
-  )
-
+    user_email = request.session.get("user_email")
+    return templates.TemplateResponse(
+        "index.html", {"request": request, "user_email": user_email}
+    )
 
 @app.post("/send-otp")
-def send_otp(
-    request: Request, background_tasks: BackgroundTasks, email: str = Form(...)
-):
-  otp_code = f"{random.randint(0, 999999):06d}"
-  expires = datetime.utcnow() + timedelta(minutes=5)
+def send_otp(request: Request, background_tasks: BackgroundTasks, email: str = Form(...)):
+    otp_code = f"{random.randint(0, 999999):06d}"
+    expires = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-  with Session(engine) as db:
-    token_entry = db.exec(select(OTPToken).where(OTPToken.email == email)).first()
-    if token_entry:
-      token_entry.otp = otp_code
-      token_entry.expires_at = expires
-      db.add(token_entry)
-    else:
-      token_entry = OTPToken(email=email, otp=otp_code, expires_at=expires)
-      db.add(token_entry)
-    db.commit()
+    with Session(engine) as db:
+        token_entry = db.exec(select(OTPToken).where(OTPToken.email == email)).first()
+        if token_entry:
+            token_entry.otp = otp_code
+            token_entry.expires_at = expires
+            db.add(token_entry)
+        else:
+            token_entry = OTPToken(email=email, otp=otp_code, expires_at=expires)
+            db.add(token_entry)
+        db.commit()
 
-  # Add email dispatch task to FastAPI background queue
-  background_tasks.add_task(send_email_smtp, email, otp_code)
-
-  request.session["pending_email"] = email
-  return RedirectResponse(url="/verify", status_code=303)
-
+    background_tasks.add_task(send_email_smtp, email, otp_code)
+    request.session["pending_email"] = email
+    return RedirectResponse(url="/verify", status_code=303)
 
 @app.get("/verify")
 def verify_page(request: Request):
-  email = request.session.get("pending_email", "")
-  return templates.TemplateResponse(
-      "verify.html", {"request": request, "email": email}
-  )
-
+    email = request.session.get("pending_email", "")
+    return templates.TemplateResponse(
+        "verify.html", {"request": request, "email": email}
+    )
 
 @app.post("/verify-otp")
 def verify_otp(request: Request, otp: str = Form(...)):
-  email = request.session.get("pending_email")
-  if not email:
-    return RedirectResponse(url="/", status_code=303)
-
-  with Session(engine) as db:
-    token_entry = db.exec(select(OTPToken).where(OTPToken.email == email)).first()
-
-    if token_entry and token_entry.otp == otp:
-      if datetime.utcnow() <= token_entry.expires_at:
-        db.delete(token_entry)
-        db.commit()
-
-        request.session.pop("pending_email", None)
-        request.session["user_email"] = email
+    email = request.session.get("pending_email")
+    if not email:
         return RedirectResponse(url="/", status_code=303)
 
-  return RedirectResponse(url="/verify", status_code=303)
+    with Session(engine) as db:
+        token_entry = db.exec(select(OTPToken).where(OTPToken.email == email)).first()
 
+        if token_entry and token_entry.otp == otp:
+            current_time = datetime.now(timezone.utc)
+           
+            db_expires = token_entry.expires_at.replace(tzinfo=timezone.utc) if token_entry.expires_at.tzinfo is None else token_entry.expires_at
+            
+            if current_time <= db_expires:
+                db.delete(token_entry)
+                db.commit()
+
+                request.session.pop("pending_email", None)
+                request.session["user_email"] = email
+                return RedirectResponse(url="/", status_code=303)
+
+    return RedirectResponse(url="/verify", status_code=303)
 
 @app.get("/logout")
 def logout(request: Request):
-  request.session.clear()
-  return RedirectResponse(url="/", status_code=303)
-
+    request.session.clear()
+    return RedirectResponse(url="/", status_code=303)
 
 if __name__ == "__main__":
-  import uvicorn
-
-  uvicorn.run("app_bg:app", host="127.0.0.1", port=8000, reload=True)
+    import uvicorn
+  
+    uvicorn.run(app, host="127.0.0.1", port=8000)
