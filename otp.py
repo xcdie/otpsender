@@ -10,7 +10,7 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
-# 1. Database Setup
+
 DATABASE_URL = "sqlite:///./auth_background.db"
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
@@ -116,11 +116,11 @@ def send_email_smtp(email: str, otp_code: str):
       server.send_message(msg)
     print(f"[BACKGROUND TASK] Email successfully sent to {email}")
   except Exception as e:
-    # In production, log this error using a structured logger
+    
     print(f"[BACKGROUND TASK ERROR] Failed to send email to {email}: {e}")
 
 
-# 5. Application Routes
+
 @app.get("/")
 def index(request: Request):
   user_email = request.session.get("user_email")
