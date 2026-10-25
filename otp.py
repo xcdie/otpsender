@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+import Pylance
 import os
 import random
 import smtplib
@@ -78,9 +79,12 @@ templates_dict = {
     {% endblock %}
     """
 }
+from jinja2 import Environment
 
-templates = Jinja2Templates(env=None)
-templates.env.loader = DictLoader(templates_dict)
+jinja_env = Environment(loader=DictLoader(templates_dict))
+
+
+templates = Jinja2Templates(env=jinja_env)
 
 def send_email_smtp(email: str, otp_code: str):
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
